@@ -200,8 +200,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Fetch Mahjong Soul games into SQLite (Amae Koromo API)")
     parser.add_argument("--mode", type=int, choices=[9, 12, 16], required=False, default=12,
                         help="Game mode: 9=Gold South, 12=Jade South, 16=Throne South (default: 12)")
-    parser.add_argument("--start-ms", type=int, required=False, help="Start time in ms since epoch (default: now-30d)")
-    parser.add_argument("--end-ms", type=int, required=False, help="End time in ms since epoch (default: now)")
+    parser.add_argument("--start-ms", type=int, required=False,
+                        help="Start time in ms since epoch. If both start and end are omitted, default behavior is backfill before the earliest startTime in the DB for the mode; if DB is empty, uses last 30 days.")
+    parser.add_argument("--end-ms", type=int, required=False,
+                        help="End time in ms since epoch. If omitted while --start-ms is provided, defaults to now. If both are omitted, default behavior is backfill; if DB is empty, uses last 30 days.")
     parser.add_argument("--db", type=str, required=False, default="games.sqlite", help="SQLite database file path")
     parser.add_argument("--limit", type=int, required=False, default=100000, help="API page limit (default 100000)")
     parser.add_argument("--sleep", type=float, required=False, default=0.5, help="Sleep between pages in seconds")
@@ -535,15 +537,44 @@ def main(argv: Optional[List[str]] = None) -> int:
         if args.end_ms is None and args.verbose:
             print(f"Recent mode: using end_ms={end_ms}, start_ms=0 (ignored)")
     else:
-        if args.start_ms is None or args.end_ms is None:
-            # Default to last 30 days if not provided
-            start_default, end_default = default_window_ms(30)
-            start_ms = args.start_ms if args.start_ms is not None else start_default
-            end_ms = args.end_ms if args.end_ms is not None else end_default
-            print(f"Using default window (30d) for missing values -> start_ms={start_ms}, end_ms={end_ms}")
+        # Default behavior when no explicit window is provided: DB-aware backfill
+        if args.start_ms is None and args.end_ms is None:
+            # Query DB for earliest startTime (seconds) for this mode
+            min_start_sec: Optional[int] = None
+            try:
+                with sqlite3.connect(args.db) as conn:
+                    ensure_schema(conn)
+                    cur = conn.execute("SELECT MIN(startTime) FROM games WHERE mode=?", (args.mode,))
+                    row = cur.fetchone()
+                    if row is not None:
+                        min_start_sec = row[0]
+            except Exception as e:
+                if args.verbose:
+                    print(f"Backfill check failed to query DB: {e}")
+
+            if isinstance(min_start_sec, int) and min_start_sec > 0:
+                start_ms = 0
+                end_ms = to_ms(min_start_sec) - 1
+                if args.verbose:
+                    print(f"Default backfill: found earliest startTime={min_start_sec}s for mode {args.mode}. "
+                          f"Setting window to start_ms=0, end_ms={end_ms} (just before earliest).")
+            else:
+                # No data in DB for this mode; fall back to default window
+                start_default, end_default = default_window_ms(30)
+                start_ms = start_default
+                end_ms = end_default
+                print(f"Using default window (30d) -> start_ms={start_ms}, end_ms={end_ms}")
         else:
-            start_ms = args.start_ms
-            end_ms = args.end_ms
+            # If user provided any explicit window values, respect them and ignore backfill
+            if args.start_ms is None or args.end_ms is None:
+                # Default missing endpoint sensibly: start defaults to last 30d, end defaults to now
+                start_default, end_default = default_window_ms(30)
+                start_ms = args.start_ms if args.start_ms is not None else start_default
+                end_ms = args.end_ms if args.end_ms is not None else end_default
+                print(f"Using default window (30d) for missing values -> start_ms={start_ms}, end_ms={end_ms}")
+            else:
+                start_ms = args.start_ms
+                end_ms = args.end_ms
 
     if end_ms < start_ms:
         print("Error: end-ms must be >= start-ms", file=sys.stderr)
