@@ -229,7 +229,7 @@ def do_compare_levels(conn: sqlite3.Connection, args: argparse.Namespace) -> Non
     sum_grade_diff = 0
     a_better = 0
     b_better = 0
-    ties = 0
+    # ties are impossible because ranks are unique (1..4)
 
     writer = None
     f = None
@@ -282,8 +282,7 @@ def do_compare_levels(conn: sqlite3.Connection, args: argparse.Namespace) -> Non
                         a_better += 1
                     elif diff_rank > 0:
                         b_better += 1
-                    else:
-                        ties += 1
+                    # no tie case since ranks are unique
                     if writer is not None:
                         writer.writerow([
                             gid, st,
@@ -304,13 +303,13 @@ def do_compare_levels(conn: sqlite3.Connection, args: argparse.Namespace) -> Non
     avg_grade_diff = sum_grade_diff / instances
 
     # CSV-like summary line for easy copying
-    print("level_a,level_b,instances,a_better,b_better,ties,avg_rank_diff,avg_score_diff,avg_grade_diff")
-    print(f"{args.level_a},{args.level_b},{instances},{a_better},{b_better},{ties},{avg_rank_diff:.4f},{avg_score_diff:.2f},{avg_grade_diff:.2f}")
+    print("level_a,level_b,instances,a_better,b_better,avg_rank_diff,avg_score_diff,avg_grade_diff")
+    print(f"{args.level_a},{args.level_b},{instances},{a_better},{b_better},{avg_rank_diff:.4f},{avg_score_diff:.2f},{avg_grade_diff:.2f}")
 
 
-def compute_compare_summary(conn: sqlite3.Connection, args: argparse.Namespace, level_a: int, level_b: int) -> Optional[Tuple[int, int, int, int, float, float, float]]:
+def compute_compare_summary(conn: sqlite3.Connection, args: argparse.Namespace, level_a: int, level_b: int) -> Optional[Tuple[int, int, float, float, float, int]]:
     """Compute head-to-head summary for a given pair of buckets. Returns
-    (instances, a_better, b_better, ties, avg_rank_diff, avg_score_diff, avg_grade_diff)
+    (instances, a_better, b_better, avg_rank_diff, avg_score_diff, avg_grade_diff)
     or None if no instances were found."""
     if level_a == level_b:
         return None
@@ -331,7 +330,7 @@ def compute_compare_summary(conn: sqlite3.Connection, args: argparse.Namespace, 
     sum_grade_diff = 0
     a_better = 0
     b_better = 0
-    ties = 0
+    # no ties tracked; ranks are unique
 
     for row in conn.execute(sql, params):
         players = []
@@ -367,8 +366,7 @@ def compute_compare_summary(conn: sqlite3.Connection, args: argparse.Namespace, 
                     a_better += 1
                 elif diff_rank > 0:
                     b_better += 1
-                else:
-                    ties += 1
+                # no tie branch since ranks are unique
 
     if instances == 0:
         return None
@@ -376,7 +374,7 @@ def compute_compare_summary(conn: sqlite3.Connection, args: argparse.Namespace, 
     avg_rank_diff = sum_rank_diff / instances
     avg_score_diff = sum_score_diff / instances
     avg_grade_diff = sum_grade_diff / instances
-    return (instances, a_better, b_better, ties, avg_rank_diff, avg_score_diff, avg_grade_diff)
+    return (instances, a_better, avg_rank_diff, avg_score_diff, avg_grade_diff, b_better)
 
 
 def do_compare_all(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
@@ -391,7 +389,7 @@ def do_compare_all(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
 
     with open(args.csv, "w", newline="", encoding="utf-8") as f:
         w = csv.writer(f)
-        w.writerow(["level_a", "level_b", "mode", "instances", "a_better", "b_better", "ties", "avg_rank_diff", "avg_score_diff", "avg_grade_diff"])
+        w.writerow(["level_a", "level_b", "mode", "instances", "a_better", "b_better", "avg_rank_diff", "avg_score_diff", "avg_grade_diff"])
 
         for level_range_a, level_range_b, mode in level_configs:
             print(level_range_a, level_range_b, mode)
@@ -400,13 +398,13 @@ def do_compare_all(conn: sqlite3.Connection, args: argparse.Namespace) -> None:
             try:
                 for level_a in level_range_a:
                     for level_b in level_range_b:
-                        if level_a == level_b:
+                        if level_a >= level_b:
                             continue
                         summary = compute_compare_summary(conn, args, level_a, level_b)
                         if summary is None:
                             continue
-                        instances, a_better, b_better, ties, avg_rank_diff, avg_score_diff, avg_grade_diff = summary
-                        w.writerow([level_a, level_b, mode, instances, a_better, b_better, ties,
+                        instances, a_better, avg_rank_diff, avg_score_diff, avg_grade_diff, b_better = summary
+                        w.writerow([level_a, level_b, mode, instances, a_better, b_better,
                                    f"{avg_rank_diff:.4f}", f"{avg_score_diff:.2f}", f"{avg_grade_diff:.2f}"])
             finally:
                 args.mode = prev_mode
